@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Village Seva Chatbot</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="chat-container">
+        <!-- Chat Header -->
+        <div class="chat-header">
+            <h1>Village Seva Chatbot</h1>
+        </div>
+        
+        <!-- Chat Box -->
+        <div class="chat-box" id="chat-box">
+            <div class="bot-message message">
+                <span>Please select a language:</span>
+                <div class="language-buttons">
+                    <button onclick="setLanguage('English')">English</button>
+                    <button onclick="setLanguage('Kannada')">Kannada</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Input Section -->
+        <div class="chat-input">
+            <input type="text" id="user-input" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
+            <button onclick="startSpeechRecognition()">🎤</button>
+            <button onclick="sendMessage()">✔️</button>
+        </div>
+
+        <!-- Mute/Unmute Button -->
+        <div class="mute-container">
+            <button id="mute-toggle" onclick="toggleMute()">🔊</button>
+        </div>
+    </div>
+<script>
+
+        let selectedLanguage = "English";
+    let isMuted = false;
+    let currentAudio = null; // Stores the currently playing audio
+    let isUserScrolling = false; // Tracks manual scrolling
+    let chatBox = document.getElementById("chat-box");
+
+// Detect if the user manually scrolls up
+chatBox.addEventListener("scroll", () => {
+    let nearBottom = chatBox.scrollHeight - chatBox.clientHeight - chatBox.scrollTop < 10;
+    isUserScrolling = !nearBottom;
+});
+
+function setLanguage(language) {
+    selectedLanguage = language;
+    fetch("/set_language", {
+        method: "POST",
+        body: JSON.stringify({ language: selectedLanguage }),
+        headers: { "Content-Type": "application/json" }
+    }).then(response => response.json())
+      .then(data => {
+        appendMessage("bot", data.message);
+    });
+}
+
+function sendMessage() {
+    let userInput = document.getElementById("user-input").value.trim();
+    if (userInput === "") return;
+
+    stopCurrentAudio(); // Stop any playing audio immediately
+
+    appendMessage("user", userInput);
+    document.getElementById("user-input").value = "";
+
+    let loadingMessage = appendMessage("bot", "Typing...", true); // Show loading animation
+
+    fetch("/get_response", {
+        method: "POST",
+        body: JSON.stringify({ message: userInput }),
+        headers: { "Content-Type": "application/json" }
+    })
+    .then(response => response.json())
+    .then(data => {
+        let responseText = cleanResponse(data.response); // Clean emojis for speech
+
+        loadingMessage.remove(); // Remove loading animation
+        appendMessage("bot", responseText);
+        
+        stopCurrentAudio(); // Ensure no old audio plays
+        playAudio(data.audio); // Play the new audio response
+    });
+}
+
+// Append messages with typewriting effect
+function appendMessage(sender, message, isLoading = false) {
+    let messageDiv = document.createElement("div");
+    messageDiv.classList.add("message", sender === "user" ? "user-message" : "bot-message");
+
+    if (isLoading) {
+        messageDiv.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
+        chatBox.appendChild(messageDiv);
+        smoothScrollToBottom();
+        return messageDiv;
+    }
+
+    chatBox.appendChild(messageDiv);
+    let index = 0;
+
+    function typeEffect() {
+        if (index < message.length) {
+            messageDiv.innerHTML += message[index] === "\n" ? "<br>" : message[index];
+            index++;
+            setTimeout(typeEffect, 20);
+        } else {
+            if (!isUserScrolling) smoothScrollToBottom(); // Auto-scroll only if user isn’t manually scrolling
+        }
+    }
+
+    typeEffect();
+    return messageDiv;
+}
+
+// Play audio response
+function playAudio(audioFile) {
+    if (!audioFile) return;
+
+    stopCurrentAudio(); // Stop any previously playing audio before playing the new one
+
+    currentAudio = new Audio(audioFile);
+    currentAudio.volume = isMuted ? 0 : 1; // Set volume based on mute status
+    currentAudio.play();
+}
+
+// Stop currently playing audio
+function stopCurrentAudio() {
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+        currentAudio = null;
+    }
+}
+
+// Toggle mute/unmute button
+function toggleMute() {
+    isMuted = !isMuted;
+    document.getElementById("mute-toggle").innerText = isMuted ? "🔇" : "🔊";
+
+    if (currentAudio) {
+        currentAudio.volume = isMuted ? 0 : 1; // Mute/unmute audio instantly
+    }
+}
+
+// Handle Enter key press
+function handleKeyPress(event) {
+    if (event.key === "Enter") {
+        sendMessage();
+    }
+}
+
+// Speech recognition input
+function startSpeechRecognition() {
+    stopCurrentAudio(); // Stop the current audio before using the mic
+
+    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+    recognition.lang = selectedLanguage === "Kannada" ? "kn-IN" : "en-US";
+
+    recognition.onresult = function(event) {
+        let transcript = event.results[0][0].transcript;
+        document.getElementById("user-input").value = transcript;
+        sendMessage(); // Send the recognized speech as a message
+    };
+
+    recognition.start();
+}
+
+
+// Smoothly scroll to bottom only if user is at the bottom
+function smoothScrollToBottom() {
+    let nearBottom = chatBox.scrollHeight - chatBox.clientHeight - chatBox.scrollTop < 10;
+    if (nearBottom) {
+        chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+    }
+}
+
+// Remove emojis from response (to avoid them being spoken)
+function cleanResponse(text) {
+    return text.replace(/[\uD800-\uDFFF]./g, ""); // Removes emojis
+}
+
+    </script>
+</body>
+</html>
