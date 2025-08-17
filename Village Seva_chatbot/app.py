@@ -6,10 +6,56 @@ import re
 import time
 import requests
 import secrets
+import mysql.connector
+from mysql.connector import Error
 
 app = Flask(__name__)
 
 app.secret_key = secrets.token_hex(32)   # Needed for session storage
+
+# MySQL Database Configuration
+db_config = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': '',  # Add your MySQL password here
+    'database': 'village_seva_db'
+}
+
+# Function to create database connection
+def get_db_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        return connection
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        return None
+
+# Function to initialize database
+def init_db():
+    try:
+        connection = get_db_connection()
+        if connection:
+            cursor = connection.cursor()
+            
+            # Create responses table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS responses (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    query TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    language VARCHAR(20) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            connection.commit()
+            cursor.close()
+            connection.close()
+    except Error as e:
+        print(f"Error initializing database: {e}")
+
+# Initialize database on startup
+init_db()
 
 # NVIDIA API Configuration
 client = OpenAI(
@@ -91,10 +137,49 @@ def summarize_results(query, results, lang):
     
     return completion.choices[0].message.content.strip()
 
+def check_response_in_db(query, lang):
+    """Check if a response exists in the database for the given query."""
+    try:
+        connection = get_db_connection()
+        if connection:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT response FROM responses WHERE query = %s AND language = %s ORDER BY created_at DESC LIMIT 1",
+                (query, lang)
+            )
+            result = cursor.fetchone()
+            cursor.close()
+            connection.close()
+            return result['response'] if result else None
+    except Error as e:
+        print(f"Error checking database: {e}")
+        return None
+
+def store_response_in_db(query, response, lang):
+    """Store a new response in the database."""
+    try:
+        connection = get_db_connection()
+        if connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "INSERT INTO responses (query, response, language) VALUES (%s, %s, %s)",
+                (query, response, lang)
+            )
+            connection.commit()
+            cursor.close()
+            connection.close()
+    except Error as e:
+        print(f"Error storing in database: {e}")
+
 def chatbot_response(user_input, lang):
     """Processes user input, retrieves AI response, and generates speech output."""
     try:
-        # Retrieve past conversation history
+        # First check if response exists in database
+        db_response = check_response_in_db(user_input, lang)
+        if db_response:
+            return db_response, generate_speech(db_response, lang)
+
+        # If not in database, proceed with existing logic
         conversation_history = session.get("conversation_history", [])
 
         # If the query requires real-time info, fetch from Google Search API
@@ -102,7 +187,8 @@ def chatbot_response(user_input, lang):
             search_results = google_search(user_input)
             structured_summary = summarize_results(user_input, "\n".join(search_results), lang)
 
-            # Store in session for later reference
+            # Store in database and session
+            store_response_in_db(user_input, structured_summary, lang)
             conversation_history.append({"user": user_input, "bot": structured_summary})
             session["conversation_history"] = conversation_history
 
@@ -130,7 +216,8 @@ def chatbot_response(user_input, lang):
         response_text = completion.choices[0].message.content.strip()
         cleaned_text = clean_text(response_text)
 
-        # Store response in session
+        # Store in database and session
+        store_response_in_db(user_input, cleaned_text, lang)
         conversation_history.append({"user": user_input, "bot": cleaned_text})
         session["conversation_history"] = conversation_history
 
